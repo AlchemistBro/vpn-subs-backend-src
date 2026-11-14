@@ -1,0 +1,75 @@
+[project]
+name = "vpn-access-service"
+version = "0.1.0"
+description = "Сервис подписок на VPN: аккаунты, оплата, автопродление, выдача доступа"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.32",
+    "pydantic[email]>=2.9,<3",
+    "pydantic-settings>=2.6",
+    "sqlalchemy[asyncio]>=2.0.36,<2.1",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "redis>=5.2",
+    "celery[redis]>=5.4,<6",
+    "apscheduler>=3.10,<4",
+    "aiogram>=3.15,<4",
+    "httpx>=0.28,<1",
+    "structlog>=24.4",
+    "prometheus-client>=0.21",
+    "pyjwt>=2.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "respx>=0.21",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vas"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["vas"]
+omit = ["src/vas/bot/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# Генераторы схем — скрипты документации, не код сервиса.
+extend-exclude = ["tools/docs-diagrams"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "S", "SIM", "RUF", "PT"]
+ignore = ["S101", "RUF001", "RUF002", "RUF003", "S105", "S106"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+"migrations/**" = ["E501"]
+"fakes_upstream/**" = ["S"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["vas.jobs.*"]
+disallow_untyped_decorators = false
