@@ -1,0 +1,89 @@
+# Локальный стенд: docker compose up -d --wait
+# Профили: monitoring (Prometheus), analytics (ClickHouse), bot (нужен VAS_BOT_TOKEN).
+
+x-service: &service
+  image: ${VAS_IMAGE:-vpn-access-service:local}
+  env_file: [.env]
+  restart: unless-stopped
+  depends_on:
+    schema: { condition: service_completed_successfully }
+    redis: { condition: service_healthy }
+    broker: { condition: service_healthy }
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: vas }
+    volumes: [db:/var/lib/postgresql/data]
+    ports: ["${VAS_DB_PORT:-5432}:5432"]  # занят локальным Postgres — VAS_DB_PORT=5433
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "postgres"], interval: 2s, retries: 30 }
+
+  # Кеш и брокер разные: кешу можно вытеснять ключи, брокеру нельзя терять задачи.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["6379:6379"]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 2s, retries: 30 }
+
+  broker:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: [broker:/data]
+    ports: ["6380:6379"]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 2s, retries: 30 }
+
+  schema:
+    image: ${VAS_IMAGE:-vpn-access-service:local}
+    build: { context: ., args: { BUILD_SHA: "${BUILD_SHA:-dev}" } }
+    env_file: [.env]
+    command: ["alembic", "upgrade", "head"]
+    depends_on: { db: { condition: service_healthy } }
+
+  fakes:
+    image: ${VAS_IMAGE:-vpn-access-service:local}
+    env_file: [.env]
+    environment:
+      FAKE_HOOK_URL: http://api:8000/hooks/acquirer
+      FAKE_PUBLIC_URL: http://localhost:8090
+    command: ["uvicorn", "fakes_upstream.app:app", "--host", "0.0.0.0", "--port", "8090"]
+    ports: ["8090:8090"]
+    depends_on: { schema: { condition: service_completed_successfully } }
+
+  api:
+    <<: *service
+    ports: ["8000:8000"]
+    stop_grace_period: 25s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)"]
+      interval: 5s
+      retries: 10
+
+  jobs:
+    <<: *service
+    command: ["celery", "-A", "vas.jobs.app", "worker", "-Q", "access,billing,notify,analytics", "--concurrency", "4", "--loglevel", "INFO"]
+    stop_grace_period: 60s  # даём задачам доработать: celery ждёт их при тёплом выключении
+
+  cron:
+    <<: *service
+    command: ["python", "-m", "vas.cron.main"]
+    ports: ["9101:9101"]
+
+  bot:
+    <<: *service
+    command: ["python", "-m", "vas.bot.main"]
+    profiles: [bot]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    volumes: [./deploy/clickhouse:/docker-entrypoint-initdb.d:ro]
+    profiles: [analytics]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes: [./deploy/prometheus:/etc/prometheus:ro]
+    ports: ["9090:9090"]
+    profiles: [monitoring]
+
+volumes:
+  db:
+  broker:

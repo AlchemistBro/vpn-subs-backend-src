@@ -1,0 +1,67 @@
+groups:
+  - name: vas
+    rules:
+      # Деньги перестали приходить. Днём оплаты идут постоянно, тишина час — повод смотреть.
+      - alert: PaymentsFlatlined
+        expr: sum(increase(payments_applied_total[1h])) == 0 and hour() >= 6 and hour() < 21
+        for: 15m
+        labels: { severity: page }
+        annotations:
+          summary: За час не применено ни одной оплаты
+
+      - alert: AccessLagging
+        expr: access_lag_users > 20
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $value }} пользователей оплатили, но панель ещё не обновлена"
+
+      - alert: ApiErrorBudgetBurn
+        expr: |
+          sum(rate(api_requests_total{code=~"5.."}[5m]))
+            / sum(rate(api_requests_total[5m])) > 0.02
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: Больше 2% ответов API — ошибки сервера
+
+      # Рост 4xx — часто сломанный клиент после релиза приложения, а не атака.
+      - alert: ClientErrorSurge
+        expr: |
+          sum(rate(api_requests_total{code=~"4..", code!="401"}[10m]))
+            > 3 * sum(rate(api_requests_total{code=~"4..", code!="401"}[1d] offset 1d))
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: 4xx втрое выше, чем вчера в это время
+
+      - alert: UpstreamFailing
+        expr: |
+          sum by (upstream) (rate(upstream_requests_total{result!~"ok|4xx"}[5m]))
+            / sum by (upstream) (rate(upstream_requests_total[5m])) > 0.2
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.upstream }}: больше 20% запросов падают"
+
+      # Метрика ставится только при успехе. Если cron умер целиком, её не станет вовсе —
+      # поэтому отдельно проверяем, что таргет жив.
+      - alert: CronStalled
+        expr: time() - cron_last_ok_timestamp{job="reconcile_payments"} > 900
+        labels: { severity: page }
+        annotations:
+          summary: Сверка платежей не проходила больше 15 минут
+
+      - alert: CronDown
+        expr: up{job="cron"} == 0 or absent(up{job="cron"})
+        for: 3m
+        labels: { severity: page }
+        annotations:
+          summary: Процесс cron не отвечает
+
+      - alert: OutboxBacklogGrowing
+        expr: outbox_backlog > 500 and deriv(outbox_backlog[10m]) > 0
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: События не уходят в очередь — проверьте брокер
